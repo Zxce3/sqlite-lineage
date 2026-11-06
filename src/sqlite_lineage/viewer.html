@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>sqlite-lineage</title>
+<style>
+:root{--bg:#0f1117;--fg:#e6e8ee;--mut:#8b90a0;--pan:#171a23}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:13px system-ui,sans-serif;display:flex;height:100vh}
+#main{flex:1;position:relative}svg{width:100%;height:100%;cursor:grab}
+#bar{position:absolute;top:10px;left:10px;display:flex;gap:8px;z-index:2}
+input{background:var(--pan);color:var(--fg);border:1px solid #2a2f3d;border-radius:6px;padding:6px 10px;width:260px}
+button{background:var(--pan);color:var(--fg);border:1px solid #2a2f3d;border-radius:6px;padding:6px 10px;cursor:pointer}
+#side{width:360px;background:var(--pan);border-left:1px solid #2a2f3d;padding:14px;overflow:auto}
+pre{white-space:pre-wrap;background:#0b0d12;padding:8px;border-radius:6px;color:#b9c2d8;font-size:12px}
+h3{margin:.2em 0}.mut{color:var(--mut)}
+.node rect{rx:6;stroke-width:1.5}.node text{font-size:11px;fill:#fff;pointer-events:none}
+.edge{fill:none;stroke:#4a5068;stroke-width:1.2}.edge.approx{stroke-dasharray:4 3}
+.dim{opacity:.12}.hi.edge{stroke:#ffb454;stroke-width:2}
+</style></head><body>
+<div id="main"><div id="bar"><input id="q" placeholder="search table.column…"><button id="reset">reset</button></div><svg id="svg"><g id="vp"></g></svg></div>
+<div id="side"><h3>sqlite-lineage</h3><p class="mut">Click a column to highlight everything upstream of it, back to the raw files. Dashed edges are approximate (SQL too complex to map column-by-column). Scroll to zoom, drag to pan.</p><div id="info"></div></div>
+<script>
+const G=__GRAPH_JSON__,NS="http://www.w3.org/2000/svg",W=190,H=24,GX=110,GY=8;
+const byId={};G.nodes.forEach(n=>byId[n.id]=n);
+const inc={},out={};G.links.forEach(l=>{(inc[l.target]??=[]).push(l);(out[l.source]??=[]).push(l)});
+// layer = longest path from a root (cycle-safe)
+const layer={};G.nodes.forEach(n=>layer[n.id]=0);
+for(let i=0;i<G.nodes.length;i++){let ch=false;G.links.forEach(l=>{if(layer[l.target]<layer[l.source]+1&&layer[l.source]<G.nodes.length){layer[l.target]=layer[l.source]+1;ch=true}});if(!ch)break}
+const cols={};G.nodes.forEach(n=>(cols[layer[n.id]]??=[]).push(n));
+const hue=t=>{let h=0;for(const c of t)h=(h*31+c.charCodeAt(0))%360;return h};
+Object.entries(cols).forEach(([L,arr])=>{arr.sort((a,b)=>a.table.localeCompare(b.table)||a.column.localeCompare(b.column));let y=0,prev=null;
+ arr.forEach(n=>{if(prev&&prev!==n.table)y+=14;prev=n.table;n.x=L*(W+GX);n.y=y;y+=H+GY})});
+const el=(t,a={},p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);p&&p.appendChild(e);return e};
+const vp=document.getElementById("vp"),eg=el("g",{},vp),ng=el("g",{},vp);
+const edgeEls=G.links.map(l=>{const s=byId[l.source],t=byId[l.target],x1=s.x+W,y1=s.y+H/2,x2=t.x,y2=t.y+H/2,m=(x1+x2)/2;
+ return {l,e:el("path",{class:"edge"+(l.approx?" approx":""),d:`M${x1},${y1}C${m},${y1} ${m},${y2} ${x2},${y2}`},eg)}});
+const nodeEls={};
+G.nodes.forEach(n=>{const g=el("g",{class:"node",transform:`translate(${n.x},${n.y})`,style:"cursor:pointer"},ng);
+ const file=n.kind==="file";el("rect",{width:W,height:H,fill:file?"#3a3f52":`hsl(${hue(n.table)},45%,32%)`,stroke:file?"#9aa3c2":`hsl(${hue(n.table)},55%,55%)`},g);
+ const tx=el("text",{x:8,y:16},g);tx.textContent=file?"📄 "+n.column:`${n.table}.${n.column}`;g.onclick=ev=>{ev.stopPropagation();select(n.id)};nodeEls[n.id]=g});
+function ancestors(id){const seen=new Set([id]),st=[id];while(st.length){const x=st.pop();(inc[x]||[]).forEach(l=>{if(!seen.has(l.source)){seen.add(l.source);st.push(l.source)}})}return seen}
+function select(id){const up=ancestors(id);
+ for(const k in nodeEls)nodeEls[k].classList.toggle("dim",!up.has(k));
+ edgeEls.forEach(({l,e})=>{const on=up.has(l.target)&&up.has(l.source);e.classList.toggle("dim",!on);e.classList.toggle("hi",on)});
+ const n=byId[id],info=document.getElementById("info"),files=[...up].map(k=>byId[k]).filter(x=>x.kind==="file");
+ const sqls=[...new Set((inc[id]||[]).map(l=>l.sql))];
+ info.innerHTML=`<h3></h3><p class="mut">${up.size-1} upstream node(s)</p><b>Raw files</b><ul></ul><b>Transformations into this column</b>`;
+ info.querySelector("h3").textContent=n.kind==="file"?n.column:`${n.table}.${n.column}`;
+ const ul=info.querySelector("ul");(files.length?files:[{path:"(none — not derived from a registered file)"}]).forEach(f=>{const li=document.createElement("li");li.textContent=f.path+(f.sha256?` · sha256 ${f.sha256.slice(0,10)}…`:"");ul.appendChild(li)});
+ sqls.forEach(s=>{const p=document.createElement("pre");p.textContent=s;info.appendChild(p)})}
+function reset(){for(const k in nodeEls)nodeEls[k].classList.remove("dim");edgeEls.forEach(({e})=>e.classList.remove("dim","hi"));document.getElementById("info").innerHTML=""}
+document.getElementById("reset").onclick=reset;
+document.getElementById("q").oninput=e=>{const v=e.target.value.toLowerCase();if(!v)return reset();let hit=null;
+ for(const k in nodeEls){const m=k.toLowerCase().includes(v);nodeEls[k].classList.toggle("dim",!m);if(m&&!hit)hit=k}
+ edgeEls.forEach(({e})=>e.classList.add("dim"))};
+// pan & zoom
+const svg=document.getElementById("svg");let tx=20,ty=60,k=1,drag=null;
+const apply=()=>vp.setAttribute("transform",`translate(${tx},${ty}) scale(${k})`);
+{const r=document.getElementById('main').getBoundingClientRect(),bw=Math.max(...G.nodes.map(n=>n.x+W)),bh=Math.max(...G.nodes.map(n=>n.y+H));k=Math.min(1,(r.width-40)/bw,(r.height-80)/bh);}apply();
+svg.onmousedown=e=>drag={x:e.clientX-tx,y:e.clientY-ty};window.onmouseup=()=>drag=null;
+window.onmousemove=e=>{if(drag){tx=e.clientX-drag.x;ty=e.clientY-drag.y;apply()}};
+svg.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.1:.9,r=svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+ tx=mx-(mx-tx)*f;ty=my-(my-ty)*f;k*=f;apply()};
+svg.onclick=reset;
+</script></body></html>
